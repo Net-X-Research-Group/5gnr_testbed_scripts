@@ -17,9 +17,24 @@ JSON dump from server side.
 import json
 import matplotlib.pyplot as plt
 import numpy as np
+import os
+
+
+def import_log_files(file_path):
+    logs_dict = {}
+    for filename in os.listdir(file_path):
+        with open(os.path.join(file_path, filename), 'r') as f:
+            logs_dict[filename.removesuffix('.json')] = json.load(f)
+    return logs_dict
+
 
 def main():
-    json_file_path = 'server_2hr_UL.json'
+    logs = import_log_files('/Users/roberthayek/Documents/git_repos/5gnr_testbed_scripts/iperf_measurements_090324/')
+
+
+
+    print(logs)
+    '''json_file_path = 'waggle_72.json'
     with open(json_file_path) as json_file:
         raw_data = json.load(json_file)
 
@@ -27,20 +42,50 @@ def main():
     end = raw_data['end']
     intervals = raw_data['intervals']
 
-
-    bps = list()
-    rtt = list()
+    # Extract the data
+    bps = []
+    rtt = []
+    retransmits = []
+    size = []
+    rttvar = []
     for value in intervals:
-        bps.append(value['streams'][0]['bits_per_second'])
-        rtt.append(value['streams'][0]['bits_per_second'])
+        bps.append(value['sum']['bits_per_second'])
+        #rtt.append(value['streams'][0]['rtt'])
+        #retransmits.append(value['streams'][0]['retransmits'])
+        #size.append(value['sum']['bits_per_second'])
+        #rtt.append(value['streams'][0]['rttvar'])
 
 
-    plt.figure()
-    plt.plot(bps)
+
+    bps = np.array(bps)/1e6
+    time = np.arange(0, len(bps))
+
+
+    # Plot the data
+    plt.figure(0)
+
+
+    plt.scatter(time,bps)
+
+    z = np.polyfit(time, bps, 10)
+    p = np.poly1d(z)
+
+    # add trendline to plot
+    plt.plot(time, p(time), "r--", label='Trendline')
+    plt.plot(time, bps, "b", label='Bitrate (Mbps)')
+    plt.legend()
+    plt.title('Bitrate vs. Time 100M DL Transfer')
+    plt.ylabel('Bit Rate (Mbps)')
+    plt.xlabel('Time (s)')
+
+    plt.ylim(ymin=0)
+    plt.xlim(xmin=0)
+
     plt.show()
-    plt.savefig('output.png')
-    print('DONE!')
 
+
+    print('DONE!')
+'''
 
 if __name__ == "__main__":
     main()
