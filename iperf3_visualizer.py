@@ -16,6 +16,7 @@ JSON dump from server side.
 
 import json
 import matplotlib.pyplot as plt
+import pandas as pd
 import numpy as np
 import os
 
@@ -30,10 +31,48 @@ def import_log_files(file_path):
 
 def main():
     logs = import_log_files('/Users/roberthayek/Documents/git_repos/5gnr_testbed_scripts/iperf_measurements_090324/')
+    downlink = {}
+    uplink = {}
+
+    for log in logs:
+        print('Entering log:', log)
+        if 'DL' in log:
+            bitrate = []
+            for interval in logs[log]['intervals']:
+                bitrate.append(interval['sum']['bits_per_second'])
+            downlink[log] = bitrate
+
+        if 'UL' in log:
+            uplink[log] = logs[log]
+            bitrate = []
+            for interval in logs[log]['intervals']:
+                bitrate.append(interval['sum']['bits_per_second'])
+            uplink[log] = bitrate
+
+    #downlink = pd.DataFrame.from_dict(downlink)
+    #uplink = pd.DataFrame.from_dict(uplink)
+
+    plt.figure(0)
+    for key in downlink:
+        plt.plot(downlink[key][15:], label=key)
+    #plt.boxplot(downlink)
+    #plt.show()
+
+    plt.figure(1)
+    for key in uplink:
+        plt.plot(uplink[key][15:], label=key)
+
+    plt.legend()
+    plt.title('Downlink Bitrate')
+    plt.xlabel('Time (s)')
+    plt.ylabel('Bitrate (Mbps)')
+    plt.show()
+
+    print('DONE!')
 
 
 
-    print(logs)
+
     '''json_file_path = 'waggle_72.json'
     with open(json_file_path) as json_file:
         raw_data = json.load(json_file)
