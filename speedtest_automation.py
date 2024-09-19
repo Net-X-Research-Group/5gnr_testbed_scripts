@@ -24,7 +24,7 @@ def get_5g_ipaddr() -> str:
 
 
 def run_test(interface_address: str) -> dict:
-    instance = speedtest.Speedtest(source_address=interface_address)
+    instance = speedtest.Speedtest(source_address=interface_address, secure=True)
     #instance.get_servers()
     instance.get_best_server()
     
