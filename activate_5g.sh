@@ -28,6 +28,6 @@ while true; do
         run_script
     fi
     # Sleep for some time before checking again (adjust as needed)
-    sleep 5
+    sleep 0.5
 done
 
