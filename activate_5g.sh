@@ -17,7 +17,7 @@ run_script() {
     sudo qmicli -p -d /dev/cdc-wdm0 --wds-get-packet-service-status
     sudo qmicli -p -d /dev/cdc-wdm0 --wds-get-current-settings
     sleep 2
-    sudo udhcpc -q -f -i wwan0 -t 5
+    sudo udhcpc -n -q -f -i wwan0 -t 5
 }
 
 # Main loop to keep checking ping
