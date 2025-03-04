@@ -12,7 +12,7 @@ run_script() {
 while true; do
     # Check if the ping to 8.8.8.8 succeeds
     if ! ping -c 1 -I wwan0 8.8.8.8 > /dev/null 2>&1; then
-        echo "Ping failed. Rerunning script..." >> /var/log/cell_monitor.log
+        echo "Ping failed. Rerunning script..." >> ~/cell_monitor.log
         run_script
     fi
     # Sleep for some time before checking again
