@@ -16,7 +16,7 @@ run_script() {
     sudo qmicli -p -d /dev/cdc-wdm0 --wds-get-packet-service-status
     sudo qmicli -p -d /dev/cdc-wdm0 --wds-get-current-settings
     sleep 2
-    sudo udhcpc -q -f -x lease:86400 -i wwan0
+    sudo udhcpc -q -f -x lease:86400 -i wwan0 -t 5 -n
 }
 
 # Run the main loop in the background
