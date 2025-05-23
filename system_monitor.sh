@@ -53,6 +53,33 @@ while true; do
 			echo "Maximum failed attempts reached. Restarting modem..."
 			"$STOP"
 			"$START" &
+			START_PID=$!
+
+			# Wait for up to 15 seconds for the start command to complete
+            WAIT_TIME=0
+            while [ $WAIT_TIME -lt 15 ]; do
+                if ! kill -0 $START_PID 2>/dev/null; then
+                    # Process has completed
+                    echo "Start command completed successfully"
+                    break
+                fi
+                sleep 3
+                WAIT_TIME=$((WAIT_TIME + SLEEP_INTERVAL))
+            done
+            
+            # Check if start command is still running after timeout
+            if kill -0 $START_PID 2>/dev/null; then
+                echo "Start command did not complete within 15 seconds. Terminating process."
+                kill $START_PID
+                START_FAILURES=$((START_FAILURES + 1))
+                
+                if [ $START_FAILURES -ge $MAX_START_FAILURES ]; then
+                    echo "Start command has failed $START_FAILURES times. gNB may be down. Exiting script."
+                    exit 1
+                fi
+            else
+				START_FAILURES=0
+			fi
 
 			FAILED_ATTEMPTS=0
 			sleep 15
