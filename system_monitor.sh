@@ -58,20 +58,21 @@ while true; do
 
 			# Wait for up to 15 seconds for the start command to complete
             WAIT_TIME=0
-            while [ $WAIT_TIME -lt 15 ]; do
+            while [ $WAIT_TIME -lt 30 ]; do
                 if ! kill -0 $START_PID 2>/dev/null; then
                     # Process has completed
                     echo "Start command completed successfully"
                     break
                 fi
                 sleep 3
-                WAIT_TIME=$((WAIT_TIME + SLEEP_INTERVAL))
+                WAIT_TIME=$((WAIT_TIME + 3))
             done
             
             # Check if start command is still running after timeout
             if kill -0 $START_PID 2>/dev/null; then
-                echo "Start command did not complete within 15 seconds. Terminating process."
-                kill $START_PID
+                echo "Start command did not complete within 30 seconds. Terminating process."
+                # kill $START_PID
+				sudo pkill udhcpc
                 START_FAILURES=$((START_FAILURES + 1))
                 
                 if [ $START_FAILURES -ge $MAX_START_FAILURES ]; then
