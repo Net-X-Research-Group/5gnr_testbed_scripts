@@ -6,6 +6,7 @@ START="$HOME/5gnr_testbed_scripts/start_telit_modem_qmicli.sh"
 MAX_FAILED_ATTEMPTS=4
 FAILED_ATTEMPTS=0
 MAX_LOG_AGE_SECONDS=500
+MAX_START_FAILURES=3
 
 # Initialize variables to track log updates
 LAST_LOGGED_LINE=""
