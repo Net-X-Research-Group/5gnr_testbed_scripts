@@ -209,8 +209,8 @@ run_iperf_client() {
     
     # Run iperf3 in the background with specific IP binding
     # Note: We need to run it continuously, so use a very long duration
-    echo "iperf3 -u -c $SERVER_IP -B $wwan0_ip -p $IPERF_PORT -t 86400 &"
-    iperf3 -u -c $SERVER_IP -B $wwan0_ip -p $IPERF_PORT -t 86400 &
+    echo "iperf3 -u -c $SERVER_IP -B $wwan0_ip -p $IPERF_PORT -t 86400 -b 0 &"
+    iperf3 -u -c $SERVER_IP -B $wwan0_ip -p $IPERF_PORT -t 86400 -b 0 &
     
     # Let it initialize
     sleep 5
