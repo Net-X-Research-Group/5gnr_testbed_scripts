@@ -1,184 +1,165 @@
 #!/bin/bash
 STOP="$HOME/5gnr_testbed_scripts/stop_telit_modem_qmicli.sh"
 START="$HOME/5gnr_testbed_scripts/start_telit_modem_qmicli.sh"
-CLIENT="commnetpi05@129.105.6.21"
-HOST="commnetpi06@129.105.6.22"
 IPERF_PORT=5023
+UDP_DISCOVERY_PORT=5024
 TEST_DURATION=7200
 MAX_START_FAILURES=3
 START_FAILURES=0
+DISCOVERY_BROADCAST_INTERVAL=15  # Seconds between broadcasting server IP
+DISCOVERY_TIMEOUT=60             # How long to wait during initial discovery
+
+# Print usage information
+usage() {
+    echo "Usage: $0 --mode=[client|server] [--server-ip=IP_ADDRESS]"
+    echo ""
+    echo "Options:"
+    echo "  --mode        Required. Specify whether this node runs as 'client' or 'server'"
+    echo "  --server-ip   Optional for client mode. IP address of the iperf3 server."
+    echo "                If not provided, client will use UDP discovery to find server."
+    exit 1
+}
+
+# Parse command line arguments
+MODE=""
+SERVER_IP=""
+
+for arg in "$@"; do
+    case $arg in
+        --mode=*)
+            MODE="${arg#*=}"
+            shift
+            ;;
+        --server-ip=*)
+            SERVER_IP="${arg#*=}"
+            shift
+            ;;
+        *)
+            echo "Unknown argument: $arg"
+            usage
+            ;;
+    esac
+done
+
+# Validate arguments
+if [ -z "$MODE" ] || { [ "$MODE" != "client" ] && [ "$MODE" != "server" ]; }; then
+    echo "Error: Mode must be specified as 'client' or 'server'"
+    usage
+fi
 
 graceful_quit() {
-    ssh $CLIENT "pkill -f iperf3"
+    echo "Received termination signal. Cleaning up..."
     pkill -f iperf3
+    # Kill any background discovery processes
+    if [ -n "$DISCOVERY_PID" ]; then
+        kill $DISCOVERY_PID 2>/dev/null
+    fi
+    if [ -n "$BROADCAST_PID" ]; then
+        kill $BROADCAST_PID 2>/dev/null
+    fi
     exit 0
 }
 
 check_connection() {
-    local target="$1"  # "local" or "remote"
     local ping_output
     local packet_loss
     
-    echo "Checking ${target} connection..."
-    
-    if [ "$target" = "local" ]; then
-        # Run ping locally
-        ping_output=$(ping 8.8.8.8 -I wwan0 -c 3)
-    else
-        # Run ping remotely
-        ssh $CLIENT "ping 8.8.8.8 -I wwan0 -c 3" > /tmp/remote_ping.txt
-        ping_output=$(<"/tmp/remote_ping.txt")
-    fi
+    echo "Checking connection..."
+    ping_output=$(ping 8.8.8.8 -I wwan0 -c 3)
     
     # Extract packet loss using regex
     if [[ $ping_output =~ ([0-9]+)%\ packet\ loss ]]; then
         packet_loss=${BASH_REMATCH[1]}
-        echo "${target^} packet loss: $packet_loss%"
+        echo "Packet loss: $packet_loss%"
         return $packet_loss
     else
-        echo "Failed to check ${target} connection"
+        echo "Failed to check connection"
         return 100  # Return 100 to indicate error
     fi
 }
 
 restart_modem() {
-    local target="$1"  # "local" or "remote"
+    echo "Restarting modem..."
     
-    echo "Restarting ${target} modem..."
+    $STOP
+    sleep 2
+    $START &
+    START_PID=$!
     
-    if [ "$target" = "local" ]; then
-        $STOP
-        sleep 2
-        $START &
-        START_PID=$!
-        
-        # Wait for up to 30 seconds for the start command to complete
-        WAIT_TIME=0
-        while [ $WAIT_TIME -lt 30 ]; do
-            if ! kill -0 $START_PID 2>/dev/null; then
-                # Process has completed
-                echo "Start command completed successfully"
-                START_FAILURES=0
-                break
-            fi
-            sleep 3
-            WAIT_TIME=$((WAIT_TIME + 3))
-        done
-        
-        # Check if start command is still running after timeout
-        if kill -0 $START_PID 2>/dev/null; then
-            echo "Start command did not complete within 30 seconds. Terminating process."
-            sudo pkill udhcpc
-            START_FAILURES=$((START_FAILURES + 1))
-            
-            if [ $START_FAILURES -ge $MAX_START_FAILURES ]; then
-                echo "Start command has failed $START_FAILURES times. gNB may be down. Exiting script."
-                exit 1
-            fi
-        fi
-        sleep 15  # Give time for modem to stabilize
-    else
-        # For remote device, use ssh to run the commands
-        ssh $CLIENT "
-            $STOP
-            sleep 2
-            $START > /tmp/start_log.out 2>&1 &
-            START_PID=\$!
-            
-            # Wait for up to 30 seconds for the start command to complete
-            WAIT_TIME=0
-            while [ \$WAIT_TIME -lt 30 ]; do
-                if ! kill -0 \$START_PID 2>/dev/null; then
-                    echo 'Start command completed successfully'
-                    break
-                fi
-                sleep 3
-                WAIT_TIME=\$((WAIT_TIME + 3))
-            done
-            
-            # Check if start command is still running after timeout
-            if kill -0 \$START_PID 2>/dev/null; then
-                echo 'Start command did not complete within 30 seconds. Terminating process.'
-                sudo pkill udhcpc
-            fi
-        "
-        
-        # Check if we've had too many failures
-        if [ "$target" = "remote" ]; then
-            START_FAILURES=$((START_FAILURES + 1))
-            if [ $START_FAILURES -ge $MAX_START_FAILURES ]; then
-                echo "Start command has failed $START_FAILURES times on remote. gNB may be down. Exiting script."
-                exit 1
-            fi
-        else
+    # Wait for up to 30 seconds for the start command to complete
+    WAIT_TIME=0
+    while [ $WAIT_TIME -lt 30 ]; do
+        if ! kill -0 $START_PID 2>/dev/null; then
+            # Process has completed
+            echo "Start command completed successfully"
             START_FAILURES=0
+            break
         fi
-        sleep 15  # Give time for modem to stabilize
+        sleep 3
+        WAIT_TIME=$((WAIT_TIME + 3))
+    done
+    
+    # Check if start command is still running after timeout
+    if kill -0 $START_PID 2>/dev/null; then
+        echo "Start command did not complete within 30 seconds. Terminating process."
+        sudo pkill udhcpc
+        START_FAILURES=$((START_FAILURES + 1))
+        
+        if [ $START_FAILURES -ge $MAX_START_FAILURES ]; then
+            echo "Start command has failed $START_FAILURES times. gNB may be down. Exiting script."
+            exit 1
+        fi
     fi
+    sleep 15  # Give time for modem to stabilize
 }
 
-# Get wwan0 IP address for either local or remote machine
+# Get wwan0 IP address
 get_wwan0_ip() {
-    local target="$1"  # "local" or "remote"
     local wwan0_ip
     
-    echo "Getting wwan0 IP address on ${target} machine..."
+    echo "Getting wwan0 IP address..."
     
-    if [ "$target" = "local" ]; then
-        # Get IP locally
-        wwan0_ip=$(ip addr show wwan0 | grep -oP 'inet \K[\d.]+' || ifconfig wwan0 | grep -oP 'inet addr:\K[\d.]+')
-    else
-        # Get IP remotely
-        wwan0_ip=$(ssh $CLIENT "ip addr show wwan0 | grep -oP 'inet \K[\d.]+' || ifconfig wwan0 | grep -oP 'inet addr:\K[\d.]+'")
-    fi
+    wwan0_ip=$(ip addr show wwan0 | grep -oP 'inet \K[\d.]+' || ifconfig wwan0 | grep -oP 'inet addr:\K[\d.]+')
     
     if [[ -z "$wwan0_ip" ]]; then
-        echo "Error: Could not determine wwan0 IP address on ${target} machine" >&2
+        echo "Error: Could not determine wwan0 IP address" >&2
         return 1
     fi
     
-    echo "Found ${target} wwan0 IP: $wwan0_ip"
+    echo "Found wwan0 IP: $wwan0_ip"
     echo "$wwan0_ip"
     return 0
 }
 
-# Combined function to check if iperf3 is running
+# Check if iperf3 is running
 check_iperf() {
-    local target="$1"  # "local" or "remote"
     local is_running
     
-    echo "Checking if iperf3 is running on ${target} device..."
+    echo "Checking if iperf3 is running..."
     
-    if [ "$target" = "local" ]; then
-        # Get count locally, trim whitespace
-        is_running=$(pgrep -c iperf3 2>/dev/null | tr -d ' \t\n\r' || echo "0")
-    else
-        # Get count remotely, trim whitespace
-        is_running=$(ssh $CLIENT "pgrep -c iperf3 2>/dev/null | tr -d ' \t\n\r'" || echo "0")
-    fi
+    is_running=$(pgrep -c iperf3 2>/dev/null | tr -d ' \t\n\r' || echo "0")
     
     # Debug the actual value
     echo "DEBUG: Raw count value: '$is_running'"
     
     # First check if it's empty or exactly "0"
     if [ -z "$is_running" ] || [ "$is_running" = "0" ]; then
-        echo "iperf3 is not running on ${target} device (case 1)"
+        echo "iperf3 is not running (case 1)"
         return 1
     # Then check if it contains a 0 (e.g., "0 0" case)
     elif echo "$is_running" | grep -q "^0"; then
-        echo "iperf3 is not running on ${target} device (case 2)"
+        echo "iperf3 is not running (case 2)"
         return 1
     # If it's any other value, we assume it's a non-zero count
     else
-        echo "iperf3 is running on ${target} device (processes: $is_running)"
+        echo "iperf3 is running (processes: $is_running)"
         return 0
     fi
 }
 
 # Start iperf3 server binding to wwan0 interface
 start_iperf_server() {
-    get_wwan0_ip "local"
-    local wwan0_ip=$?
+    local wwan0_ip=$(get_wwan0_ip)
     
     if [ $? -ne 0 ] || [ -z "$wwan0_ip" ]; then
         echo "Failed to get wwan0 IP, cannot start server"
@@ -191,72 +172,176 @@ start_iperf_server() {
     fi
 }
 
-# Run iperf3 test
-run_iperf_test() {
-    echo "Running iperf3 test..."
+# Run iperf3 client test
+run_iperf_client() {
+    echo "Running iperf3 client test to server $SERVER_IP..."
     
-    # Get wwan0 IP address on the CLIENT machine
-    local wwan0_ip=$(get_wwan0_ip "remote")
+    local wwan0_ip=$(get_wwan0_ip)
     
     if [ $? -ne 0 ] || [ -z "$wwan0_ip" ]; then
-        echo "Error: Could not determine wwan0 IP address on client"
+        echo "Error: Could not determine wwan0 IP address"
+        return 1
+    fi
+    
+    # Only run test if we have a server IP
+    if [ -z "$SERVER_IP" ]; then
+        echo "No server IP available. Waiting for discovery..."
         return 1
     fi
     
     # Run iperf3 with specific IP binding
-    # TODO add num bytes instead of num time? possibly add data rate for stability
-    ssh $CLIENT "iperf3 -c $HOST -B $wwan0_ip -p $IPERF_PORT -V -t $TEST_DURATION --bidir" || echo "iperf3 test failed"
+    iperf3 -c $SERVER_IP -B $wwan0_ip -p $IPERF_PORT -V -t $TEST_DURATION --bidir || echo "iperf3 test failed"
+}
+
+# Server: Broadcast IP function
+broadcast_server_ip() {
+    # Get current wwan0 IP
+    local wwan0_ip=$(get_wwan0_ip)
+    
+    if [ $? -ne 0 ] || [ -z "$wwan0_ip" ]; then
+        echo "Cannot broadcast - no valid wwan0 IP address"
+        return 1
+    fi
+
+    # Broadcast in background
+    while true; do
+        echo "Broadcasting server IP: $wwan0_ip on UDP port $UDP_DISCOVERY_PORT"
+        echo "SERVER_IP=$wwan0_ip" | nc -u -b 255.255.255.255 $UDP_DISCOVERY_PORT
+        sleep $DISCOVERY_BROADCAST_INTERVAL
+    done
+}
+
+# Client: Discover server IP function
+discover_server_ip() {
+    echo "Starting server IP discovery on UDP port $UDP_DISCOVERY_PORT..."
+    
+    # Create a temporary file for storing messages
+    local temp_file=$(mktemp)
+    
+    # Start listening for UDP broadcasts in background
+    nc -u -l $UDP_DISCOVERY_PORT > $temp_file &
+    local nc_pid=$!
+    
+    # Store the discovery process ID
+    DISCOVERY_PID=$nc_pid
+    
+    # Periodically check for received broadcasts
+    while true; do
+        if [ -s "$temp_file" ]; then
+            local new_ip=$(grep -oP 'SERVER_IP=\K[0-9.]+' $temp_file)
+            if [ -n "$new_ip" ]; then
+                if [ "$new_ip" != "$SERVER_IP" ]; then
+                    echo "Discovered new server IP: $new_ip (was: $SERVER_IP)"
+                    SERVER_IP=$new_ip
+                    
+                    # If iperf client is running, restart it with the new IP
+                    if check_iperf; then
+                        echo "Restarting iperf client with new server IP"
+                        pkill -f iperf3
+                    fi
+                fi
+                # Clear the file for next discovery
+                : > $temp_file
+            fi
+        fi
+        sleep 5
+    done
 }
 
 # Beginning of sequential execution
 pkill -f iperf3
 trap 'graceful_quit' SIGINT SIGTERM
 
+echo "Starting congestion test in $MODE mode"
+
+# Mode-specific startup
+if [ "$MODE" = "server" ]; then
+    # Start broadcasting the server IP in the background
+    broadcast_server_ip &
+    BROADCAST_PID=$!
+elif [ "$MODE" = "client" ]; then
+    if [ -z "$SERVER_IP" ]; then
+        echo "No server IP provided. Will discover dynamically."
+        
+        # Start discovery in background
+        discover_server_ip &
+        DISCOVERY_PID=$!
+        
+        # Wait for initial server discovery or timeout
+        echo "Waiting for server discovery (timeout: ${DISCOVERY_TIMEOUT}s)..."
+        discovery_wait=0
+        while [ -z "$SERVER_IP" ] && [ $discovery_wait -lt $DISCOVERY_TIMEOUT ]; do
+            sleep 5
+            discovery_wait=$((discovery_wait + 5))
+            echo "Still waiting for server discovery... ($discovery_wait/${DISCOVERY_TIMEOUT}s)"
+        done
+        
+        if [ -z "$SERVER_IP" ]; then
+            echo "Warning: Failed to discover server IP within timeout."
+            echo "Will continue and try to discover later."
+        else
+            echo "Successfully discovered server IP: $SERVER_IP"
+        fi
+    else
+        echo "Using provided server IP: $SERVER_IP"
+        
+        # Still start discovery to update IP if server changes
+        discover_server_ip &
+        DISCOVERY_PID=$!
+    fi
+fi
+
 # Main loop
 while true; do
-    check_connection "local"
-    local_loss=$?
+    check_connection
+    loss=$?
     
-    check_connection "remote"
-    remote_loss=$?
-    
-    # Handle local connection issues
-    if [ $local_loss -lt 100 ]; then
-        echo "Local network has $local_loss% packet loss"
+    # Handle connection issues
+    if [ $loss -lt 100 ]; then
+        echo "Network has $loss% packet loss"
     else
-        echo "Local connection failed. Restarting local modem..."
-        restart_modem "local"
+        echo "Connection failed. Restarting modem..."
+        restart_modem
+        continue  # Skip to next iteration after modem restart
     fi
     
-    # Handle remote connection issues
-    if [ $remote_loss -lt 100 ]; then
-        echo "Remote network has $remote_loss% packet loss"
-    else
-        echo "Remote connection failed. Restarting remote modem..."
-        restart_modem "remote"
-    fi
-    
-
-    # Check if local iperf3 server is running, start if needed
-    if ! check_iperf "local"; then
-        echo "Starting local iperf3 server..."
-        start_iperf_server
-        if [ $? -ne 0 ]; then
-            echo "Failed to start iperf3 server due to wwan0 issues. Restarting modem..."
-            restart_modem "local"
-            continue  # Skip to next iteration of the loop
+    # Update wwan0 IP if in server mode (in case it changed)
+    if [ "$MODE" = "server" ]; then
+        # Kill existing broadcast process if running
+        if [ -n "$BROADCAST_PID" ]; then
+            if kill -0 $BROADCAST_PID 2>/dev/null; then
+                kill $BROADCAST_PID
+            fi
         fi
-    fi
-    
-    # Only try to run client if the server is running
-    if check_iperf "local"; then
-        # Check if iperf3 client is running on remote device
-        if ! check_iperf "remote"; then
-            echo "Starting iperf3 test..."
-            run_iperf_test
+        
+        # Start a new broadcast with updated IP
+        broadcast_server_ip &
+        BROADCAST_PID=$!
+        
+        # Server mode: run iperf3 server
+        if ! check_iperf; then
+            echo "Starting iperf3 server..."
+            start_iperf_server
+            if [ $? -ne 0 ]; then
+                echo "Failed to start iperf3 server due to wwan0 issues. Restarting modem..."
+                restart_modem
+                continue  # Skip to next iteration of the loop
+            fi
+        else
+            echo "iperf3 server is already running"
         fi
-    else
-        echo "Local iperf3 server is not running, skipping client test"
+    elif [ "$MODE" = "client" ]; then
+        # Client mode: run iperf3 client if not already running
+        if ! check_iperf; then
+            if [ -n "$SERVER_IP" ]; then
+                echo "Starting iperf3 client..."
+                run_iperf_client
+            else
+                echo "Cannot start iperf3 client: No server IP discovered yet"
+            fi
+        else
+            echo "iperf3 client is already running"
+        fi
     fi
     
     echo "Waiting before next check cycle..."
