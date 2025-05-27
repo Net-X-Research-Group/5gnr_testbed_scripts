@@ -5,6 +5,8 @@ CLIENT="commnetpi05@129.105.6.21"
 HOST="commnetpi06@129.105.6.22"
 IPERF_PORT=5023
 TEST_DURATION=7200
+MAX_START_FAILURES=3
+START_FAILURES=0
 
 graceful_quit() {
     ssh $CLIENT "pkill -f iperf3"
@@ -48,12 +50,70 @@ restart_modem() {
         $STOP
         sleep 2
         $START &
+        START_PID=$!
+        
+        # Wait for up to 30 seconds for the start command to complete
+        WAIT_TIME=0
+        while [ $WAIT_TIME -lt 30 ]; do
+            if ! kill -0 $START_PID 2>/dev/null; then
+                # Process has completed
+                echo "Start command completed successfully"
+                START_FAILURES=0
+                break
+            fi
+            sleep 3
+            WAIT_TIME=$((WAIT_TIME + 3))
+        done
+        
+        # Check if start command is still running after timeout
+        if kill -0 $START_PID 2>/dev/null; then
+            echo "Start command did not complete within 30 seconds. Terminating process."
+            sudo pkill udhcpc
+            START_FAILURES=$((START_FAILURES + 1))
+            
+            if [ $START_FAILURES -ge $MAX_START_FAILURES ]; then
+                echo "Start command has failed $START_FAILURES times. gNB may be down. Exiting script."
+                exit 1
+            fi
+        fi
+        sleep 15  # Give time for modem to stabilize
     else
+        # For remote device, use ssh to run the commands
         ssh $CLIENT "
             $STOP
             sleep 2
-            $START &
+            $START > /tmp/start_log.out 2>&1 &
+            START_PID=\$!
+            
+            # Wait for up to 30 seconds for the start command to complete
+            WAIT_TIME=0
+            while [ \$WAIT_TIME -lt 30 ]; do
+                if ! kill -0 \$START_PID 2>/dev/null; then
+                    echo 'Start command completed successfully'
+                    break
+                fi
+                sleep 3
+                WAIT_TIME=\$((WAIT_TIME + 3))
+            done
+            
+            # Check if start command is still running after timeout
+            if kill -0 \$START_PID 2>/dev/null; then
+                echo 'Start command did not complete within 30 seconds. Terminating process.'
+                sudo pkill udhcpc
+            fi
         "
+        
+        # Check if we've had too many failures
+        if [ "$target" = "remote" ]; then
+            START_FAILURES=$((START_FAILURES + 1))
+            if [ $START_FAILURES -ge $MAX_START_FAILURES ]; then
+                echo "Start command has failed $START_FAILURES times on remote. gNB may be down. Exiting script."
+                exit 1
+            fi
+        else
+            START_FAILURES=0
+        fi
+        sleep 15  # Give time for modem to stabilize
     fi
 }
 
