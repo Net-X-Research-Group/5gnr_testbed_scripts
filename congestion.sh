@@ -85,7 +85,7 @@ restart_modem() {
     echo "Restarting modem..."
     
     $STOP
-    sleep 2
+    sleep 3
     $START &
     START_PID=$!
     
@@ -170,8 +170,8 @@ start_iperf_server() {
         return 1  # Return error code to indicate failure
     else
         echo "Starting iperf3 server bound to $wwan0_ip"
-        echo "iperf3 -s -p $IPERF_PORT -B $wwan0_ip &"
-        iperf3 -s -p $IPERF_PORT -B $wwan0_ip &
+        echo "iperf3 -u -s -p $IPERF_PORT -B $wwan0_ip &"
+        iperf3 -u -s -p $IPERF_PORT -B $wwan0_ip &
         sleep 2
         return 0
     fi
@@ -187,7 +187,7 @@ get_server_ip() {
     fi
 }
 
-# Run iperf3 client test
+# Run iperf3 client test in background
 run_iperf_client() {
     # First get the latest server IP
     get_server_ip
@@ -207,9 +207,22 @@ run_iperf_client() {
         return 1
     fi
     
-    # Run iperf3 with specific IP binding
-    echo "iperf3 -c $SERVER_IP -B $wwan0_ip -p $IPERF_PORT -t $TEST_DURATION --bidir"
-    iperf3 -c $SERVER_IP -B $wwan0_ip -p $IPERF_PORT -t $TEST_DURATION --bidir || echo "iperf3 test failed"
+    # Run iperf3 in the background with specific IP binding
+    # Note: We need to run it continuously, so use a very long duration
+    echo "iperf3 -u -c $SERVER_IP -B $wwan0_ip -p $IPERF_PORT -t 86400 &"
+    iperf3 -u -c $SERVER_IP -B $wwan0_ip -p $IPERF_PORT -t 86400 &
+    
+    # Let it initialize
+    sleep 5
+    
+    # Verify it's running
+    if check_iperf; then
+        echo "iperf3 client started successfully in the background"
+        return 0
+    else
+        echo "Failed to start iperf3 client"
+        return 1
+    fi
 }
 
 # Server: Broadcast IP function
@@ -383,7 +396,23 @@ while true; do
                 echo "Cannot start iperf3 client: No server IP discovered yet"
             fi
         else
-            echo "iperf3 client is already running"
+            # Check if the server IP has changed
+            local old_ip=""
+            if [ -f "$SERVER_IP_FILE" ]; then
+                old_ip=$(cat "$SERVER_IP_FILE" 2>/dev/null)
+            fi
+            
+            # Get the latest server IP
+            get_server_ip
+            
+            # If the IP changed, restart the client
+            if [ "$old_ip" != "$SERVER_IP" ] && [ -n "$SERVER_IP" ]; then
+                echo "Server IP changed from $old_ip to $SERVER_IP. Restarting iperf3 client..."
+                pkill -f iperf3
+                run_iperf_client
+            else
+                echo "iperf3 client is already running with server $SERVER_IP"
+            fi
         fi
     fi
     
