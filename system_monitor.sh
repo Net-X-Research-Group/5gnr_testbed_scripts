@@ -53,6 +53,7 @@ while true; do
 		if [ "$FAILED_ATTEMPTS" -ge "$MAX_FAILED_ATTEMPTS" ]; then
 			echo "Maximum failed attempts reached. Restarting modem..."
 			"$STOP"
+			sleep 3
 			"$START" &
 			START_PID=$!
 
