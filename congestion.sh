@@ -8,6 +8,7 @@ MAX_START_FAILURES=3
 START_FAILURES=0
 DISCOVERY_BROADCAST_INTERVAL=15  # Seconds between broadcasting server IP
 DISCOVERY_TIMEOUT=60             # How long to wait during initial discovery
+SERVER_IP_FILE="/tmp/server_ip.txt"  # File to store the server IP
 
 # Print usage information
 usage() {
@@ -57,6 +58,8 @@ graceful_quit() {
     if [ -n "$BROADCAST_PID" ]; then
         kill $BROADCAST_PID 2>/dev/null
     fi
+    # Clean up temp file
+    rm -f "$SERVER_IP_FILE"
     exit 0
 }
 
@@ -106,7 +109,8 @@ restart_modem() {
         START_FAILURES=$((START_FAILURES + 1))
         
         if [ $START_FAILURES -ge $MAX_START_FAILURES ]; then
-            echo "Start command has failed $START_FAILURES times. gNB may be down. Exiting script."
+            DATE=$(date '+%Y-%m-%d %H:%M:%S')
+            echo "$DATE: Start command has failed $START_FAILURES times. gNB may be down. Exiting script."
             exit 1
         fi
     fi
@@ -117,7 +121,7 @@ restart_modem() {
 get_wwan0_ip() {
     local wwan0_ip
     
-    echo "Getting wwan0 IP address..."
+    # echo "Getting wwan0 IP address..."
     
     wwan0_ip=$(ip addr show wwan0 | grep -oP 'inet \K[\d.]+' || ifconfig wwan0 | grep -oP 'inet addr:\K[\d.]+')
     
@@ -126,7 +130,7 @@ get_wwan0_ip() {
         return 1
     fi
     
-    echo "Found wwan0 IP: $wwan0_ip"
+    # echo "Found wwan0 IP: $wwan0_ip"
     echo "$wwan0_ip"
     return 0
 }
@@ -139,8 +143,8 @@ check_iperf() {
     
     is_running=$(pgrep -c iperf3 2>/dev/null | tr -d ' \t\n\r' || echo "0")
     
-    # Debug the actual value
-    echo "DEBUG: Raw count value: '$is_running'"
+    # # Debug the actual value
+    # echo "DEBUG: Raw count value: '$is_running'"
     
     # First check if it's empty or exactly "0"
     if [ -z "$is_running" ] || [ "$is_running" = "0" ]; then
@@ -166,14 +170,28 @@ start_iperf_server() {
         return 1  # Return error code to indicate failure
     else
         echo "Starting iperf3 server bound to $wwan0_ip"
-        iperf3 -s -p $IPERF_PORT -B $wwan0_ip -V &
+        echo "iperf3 -s -p $IPERF_PORT -B $wwan0_ip &"
+        iperf3 -s -p $IPERF_PORT -B $wwan0_ip &
         sleep 2
         return 0
     fi
 }
 
+# Get current server IP from shared file
+get_server_ip() {
+    if [ -f "$SERVER_IP_FILE" ]; then
+        local ip=$(cat "$SERVER_IP_FILE" 2>/dev/null)
+        if [ -n "$ip" ]; then
+            SERVER_IP="$ip"
+        fi
+    fi
+}
+
 # Run iperf3 client test
 run_iperf_client() {
+    # First get the latest server IP
+    get_server_ip
+
     echo "Running iperf3 client test to server $SERVER_IP..."
     
     local wwan0_ip=$(get_wwan0_ip)
@@ -190,7 +208,8 @@ run_iperf_client() {
     fi
     
     # Run iperf3 with specific IP binding
-    iperf3 -c $SERVER_IP -B $wwan0_ip -p $IPERF_PORT -V -t $TEST_DURATION --bidir || echo "iperf3 test failed"
+    echo "iperf3 -c $SERVER_IP -B $wwan0_ip -p $IPERF_PORT -t $TEST_DURATION --bidir"
+    iperf3 -c $SERVER_IP -B $wwan0_ip -p $IPERF_PORT -t $TEST_DURATION --bidir || echo "iperf3 test failed"
 }
 
 # Server: Broadcast IP function
@@ -206,7 +225,7 @@ broadcast_server_ip() {
     # Broadcast in background
     while true; do
         echo "Broadcasting server IP: $wwan0_ip on UDP port $UDP_DISCOVERY_PORT"
-        echo "SERVER_IP=$wwan0_ip" | nc -u -b 255.255.255.255 $UDP_DISCOVERY_PORT
+        echo "SERVER_IP=$wwan0_ip" | nc -u -b 129.105.6.21 $UDP_DISCOVERY_PORT #TODO make IP a variable
         sleep $DISCOVERY_BROADCAST_INTERVAL
     done
 }
@@ -219,7 +238,7 @@ discover_server_ip() {
     local temp_file=$(mktemp)
     
     # Start listening for UDP broadcasts in background
-    nc -u -l $UDP_DISCOVERY_PORT > $temp_file &
+    nc -u -l -p $UDP_DISCOVERY_PORT > $temp_file &
     local nc_pid=$!
     
     # Store the discovery process ID
@@ -230,9 +249,15 @@ discover_server_ip() {
         if [ -s "$temp_file" ]; then
             local new_ip=$(grep -oP 'SERVER_IP=\K[0-9.]+' $temp_file)
             if [ -n "$new_ip" ]; then
-                if [ "$new_ip" != "$SERVER_IP" ]; then
-                    echo "Discovered new server IP: $new_ip (was: $SERVER_IP)"
-                    SERVER_IP=$new_ip
+                local current_ip=""
+                if [ -f "$SERVER_IP_FILE" ]; then
+                    current_ip=$(cat "$SERVER_IP_FILE" 2>/dev/null)
+                fi
+                
+                if [ "$new_ip" != "$current_ip" ]; then
+                    echo "Discovered new server IP: $new_ip (was: $current_ip)"
+                    # Save to shared file
+                    echo "$new_ip" > "$SERVER_IP_FILE"
                     
                     # If iperf client is running, restart it with the new IP
                     if check_iperf; then
@@ -254,6 +279,9 @@ trap 'graceful_quit' SIGINT SIGTERM
 
 echo "Starting congestion test in $MODE mode"
 
+# Ensure clean start
+rm -f "$SERVER_IP_FILE"
+
 # Mode-specific startup
 if [ "$MODE" = "server" ]; then
     # Start broadcasting the server IP in the background
@@ -270,20 +298,29 @@ elif [ "$MODE" = "client" ]; then
         # Wait for initial server discovery or timeout
         echo "Waiting for server discovery (timeout: ${DISCOVERY_TIMEOUT}s)..."
         discovery_wait=0
-        while [ -z "$SERVER_IP" ] && [ $discovery_wait -lt $DISCOVERY_TIMEOUT ]; do
+        discovery_complete=false
+        
+        while [ $discovery_wait -lt $DISCOVERY_TIMEOUT ] && [ "$discovery_complete" = "false" ]; do
             sleep 5
             discovery_wait=$((discovery_wait + 5))
-            echo "Still waiting for server discovery... ($discovery_wait/${DISCOVERY_TIMEOUT}s)"
+            
+            # Check if server IP has been discovered
+            if [ -f "$SERVER_IP_FILE" ] && [ -s "$SERVER_IP_FILE" ]; then
+                SERVER_IP=$(cat "$SERVER_IP_FILE")
+                echo "Successfully discovered server IP: $SERVER_IP"
+                discovery_complete=true
+            else
+                echo "Still waiting for server discovery... ($discovery_wait/${DISCOVERY_TIMEOUT}s)"
+            fi
         done
         
-        if [ -z "$SERVER_IP" ]; then
+        if [ "$discovery_complete" = "false" ]; then
             echo "Warning: Failed to discover server IP within timeout."
             echo "Will continue and try to discover later."
-        else
-            echo "Successfully discovered server IP: $SERVER_IP"
         fi
     else
         echo "Using provided server IP: $SERVER_IP"
+        echo "$SERVER_IP" > "$SERVER_IP_FILE"
         
         # Still start discovery to update IP if server changes
         discover_server_ip &
@@ -293,6 +330,11 @@ fi
 
 # Main loop
 while true; do
+    # In client mode, check for updated server IP
+    if [ "$MODE" = "client" ]; then
+        get_server_ip
+    fi
+
     check_connection
     loss=$?
     
@@ -333,6 +375,7 @@ while true; do
     elif [ "$MODE" = "client" ]; then
         # Client mode: run iperf3 client if not already running
         if ! check_iperf; then
+            get_server_ip  # Get latest server IP before checking
             if [ -n "$SERVER_IP" ]; then
                 echo "Starting iperf3 client..."
                 run_iperf_client

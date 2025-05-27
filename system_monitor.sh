@@ -76,7 +76,8 @@ while true; do
                 START_FAILURES=$((START_FAILURES + 1))
                 
                 if [ $START_FAILURES -ge $MAX_START_FAILURES ]; then
-                    echo "Start command has failed $START_FAILURES times. gNB may be down. Exiting script."
+                    DATE=$(date '+%Y-%m-%d %H:%M:%S')
+            		echo "$DATE: Start command has failed $START_FAILURES times. gNB may be down. Exiting script."
                     exit 1
                 fi
             else
