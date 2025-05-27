@@ -83,6 +83,7 @@ check_connection() {
 
 restart_modem() {
     echo "Restarting modem..."
+    pkill -f iperf3
     
     $STOP
     sleep 3
