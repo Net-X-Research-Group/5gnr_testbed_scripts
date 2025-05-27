@@ -170,8 +170,8 @@ start_iperf_server() {
         return 1  # Return error code to indicate failure
     else
         echo "Starting iperf3 server bound to $wwan0_ip"
-        echo "iperf3 -u -s -p $IPERF_PORT -B $wwan0_ip &"
-        iperf3 -u -s -p $IPERF_PORT -B $wwan0_ip &
+        echo "iperf3 -s -p $IPERF_PORT -B $wwan0_ip &"
+        iperf3 -s -p $IPERF_PORT -B $wwan0_ip &
         sleep 2
         return 0
     fi
@@ -397,7 +397,7 @@ while true; do
             fi
         else
             # Check if the server IP has changed
-            local old_ip=""
+            old_ip=""
             if [ -f "$SERVER_IP_FILE" ]; then
                 old_ip=$(cat "$SERVER_IP_FILE" 2>/dev/null)
             fi

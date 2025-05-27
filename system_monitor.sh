@@ -103,6 +103,7 @@ while true; do
 		fi
 	elif echo "$LAST_LOG_LINE" | grep -q "Disconnect and shut down"; then
 		docker compose down
+		sudo ifconfig wwan0 down
 		docker compose pull
 		docker compose up -d
 		FAILED_ATTEMPTS=0
