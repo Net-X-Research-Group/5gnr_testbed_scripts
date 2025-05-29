@@ -1,4 +1,4 @@
-$#!/bin/bash
+#!/bin/bash
 DEVICE=/dev/cdc-wdm0
 INTERFACE=wwan0
 
