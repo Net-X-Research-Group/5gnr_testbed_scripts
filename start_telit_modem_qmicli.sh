@@ -1,6 +1,7 @@
 #!/bin/bash
 
 sudo qmi-network /dev/cdc-wdm0 stop
+sleep 2
 sudo qmi-network /dev/cdc-wdm0 start
 sleep 2
 
